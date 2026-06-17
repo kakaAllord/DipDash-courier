@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { tsh } from "@/lib/format";
+import { RingtoneSettings } from "@/components/RingtoneSettings";
 import { logoutCourier } from "../courier-actions";
 
 export default async function CourierProfile() {
@@ -24,8 +25,16 @@ export default async function CourierProfile() {
 
       <Card>
         <div className="flex items-center gap-3">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary text-xl font-bold text-white">
-            {student?.name.charAt(0) ?? "C"}
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-xl font-bold text-white">
+            {student?.name
+              ? student.name
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .map((n) => n.charAt(0))
+                  .join("")
+                  .toUpperCase()
+              : "C"}
           </div>
           <div>
             <p className="font-bold">{student?.name ?? "Courier"}</p>
@@ -53,6 +62,16 @@ export default async function CourierProfile() {
           </p>
         </Card>
       </div>
+
+      <Card className="flex flex-col gap-3">
+        <p className="font-bold">Sounds</p>
+        <RingtoneSettings
+          events={[
+            { id: "new_order", label: "New order available" },
+            { id: "order_update", label: "Order updates" },
+          ]}
+        />
+      </Card>
 
       <form action={logoutCourier}>
         <Button type="submit" variant="ghost" block>

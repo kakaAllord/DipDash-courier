@@ -2,15 +2,16 @@
 
 import { useActionState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { activateCourier, type ActivateResult } from "../activate-actions";
+import { loginCourier, type LoginResult } from "../activate-actions";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { PasswordField } from "@/components/ui/PasswordField";
 import { Logo, Wordmark } from "@/components/Brand";
 
-export default function ActivatePage() {
+export default function CourierLoginPage() {
   const router = useRouter();
-  const [state, action, pending] = useActionState<ActivateResult | null, FormData>(
-    activateCourier,
+  const [state, action, pending] = useActionState<LoginResult | null, FormData>(
+    loginCourier,
     null
   );
 
@@ -29,30 +30,30 @@ export default function ActivatePage() {
           </span>
         </div>
         <p className="text-sm text-muted">
-          Activate with the token sent to your phone after approval.
+          Sign in with your admission number and password.
         </p>
       </div>
 
       <form action={action} className="flex flex-col gap-4">
         <Input
-          name="phone"
-          label="Phone number"
-          placeholder="0755111222"
-          inputMode="tel"
+          name="admissionNo"
+          label="Admission number"
+          placeholder="29030111002"
+          autoComplete="username"
           required
         />
-        <Input
-          name="token"
-          label="Activation token"
-          placeholder="CR-904X"
-          autoCapitalize="characters"
+        <PasswordField
+          name="password"
+          label="Password"
+          placeholder="Your account password"
+          autoComplete="current-password"
           required
         />
         {state?.error && (
           <p className="text-sm font-medium text-danger">{state.error}</p>
         )}
         <Button type="submit" size="lg" block disabled={pending}>
-          {pending ? "Activating…" : "Activate courier profile"}
+          {pending ? "Signing in…" : "Sign in"}
         </Button>
       </form>
 

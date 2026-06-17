@@ -6,15 +6,18 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Card } from "@/components/ui/Card";
 import { markCollected, confirmDelivery } from "@/app/(app)/courier-actions";
+import { getSocket, emitOrderStatus } from "@/lib/realtime";
 
 export function OrderActions({
   orderId,
   status,
   pickupToken,
+  courierId,
 }: {
   orderId: string;
   status: string;
   pickupToken: string;
+  courierId: string;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -26,7 +29,13 @@ export function OrderActions({
     start(async () => {
       const res = await markCollected(orderId);
       if (!res.ok) setError(res.error ?? "Failed");
-      else router.refresh();
+      else {
+        emitOrderStatus(getSocket({ role: "courier", id: courierId }), {
+          orderId,
+          status: "collected",
+        });
+        router.refresh();
+      }
     });
   }
 
@@ -35,8 +44,25 @@ export function OrderActions({
     start(async () => {
       const res = await confirmDelivery(orderId, pin);
       if (!res.ok) setError(res.error ?? "Failed");
-      else router.refresh();
+      else {
+        emitOrderStatus(getSocket({ role: "courier", id: courierId }), {
+          orderId,
+          status: "delivered",
+        });
+        router.refresh();
+      }
     });
+  }
+
+  if (status === "pending_payment") {
+    return (
+      <Card className="border-accent/40 bg-accent-soft/30 text-center">
+        <p className="text-sm font-medium">
+          ⏳ Waiting for the student to pay. You&apos;ll get the pickup token here
+          the moment they do.
+        </p>
+      </Card>
+    );
   }
 
   if (status === "accepted") {

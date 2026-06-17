@@ -1,7 +1,17 @@
 import "server-only";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db, schema } from "@/lib/db/client";
 import type { Order, OrderItem } from "@/lib/db/schema";
+import { isAutoOpen } from "@/lib/domain/delivery";
+
+/** A courier's cash-out requests, newest first. */
+export async function listPayouts(courierId: string) {
+  return db
+    .select()
+    .from(schema.payouts)
+    .where(eq(schema.payouts.courierId, courierId))
+    .orderBy(desc(schema.payouts.requestedAt));
+}
 
 export async function getCourierById(courierId: string) {
   const rows = await db
@@ -12,21 +22,21 @@ export async function getCourierById(courierId: string) {
   return rows[0] ?? null;
 }
 
-/** Match a courier for activation by their phone (via student) + token. */
-export async function findCourierForActivation(phone: string, token: string) {
+/**
+ * Look up a courier by the student's admission number. Couriers sign in with
+ * their admission number + the same password they set in the student app, so
+ * we return the student's password hash for verification.
+ */
+export async function findCourierByAdmission(admissionNo: string) {
   const rows = await db
     .select({
       courier: schema.couriers,
       studentName: schema.students.name,
+      passwordHash: schema.students.passwordHash,
     })
     .from(schema.couriers)
     .innerJoin(schema.students, eq(schema.couriers.studentId, schema.students.id))
-    .where(
-      and(
-        eq(schema.students.phone, phone.trim()),
-        eq(schema.couriers.activationToken, token.trim())
-      )
-    )
+    .where(eq(schema.students.admissionNo, admissionNo.trim()))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -35,7 +45,10 @@ export interface CourierOrderView extends Order {
   items: OrderItem[];
   vendorName: string;
   vendorLocation: string;
+  vendorLat: number | null;
+  vendorLng: number | null;
   studentName: string;
+  studentPhone: string | null;
   deliverTo: string | null;
 }
 
@@ -53,18 +66,34 @@ async function hydrate(orders: Order[]): Promise<CourierOrderView[]> {
     items: allItems.filter((i) => i.orderId === o.id),
     vendorName: vById.get(o.vendorId)?.name ?? "Unknown",
     vendorLocation: vById.get(o.vendorId)?.location ?? "in_campus",
+    vendorLat: vById.get(o.vendorId)?.lat ?? null,
+    vendorLng: vById.get(o.vendorId)?.lng ?? null,
     studentName: sById.get(o.studentId)?.name ?? "Student",
+    studentPhone: sById.get(o.studentId)?.phone ?? null,
   }));
 }
 
-/** Orders paid and awaiting a courier. */
+/**
+ * Orders a courier can grab: instant requests (finding_courier) plus scheduled
+ * orders that have auto-opened (within 40 min of their delivery time and still
+ * unassigned by the admin). Excludes scheduled orders still awaiting dispatch.
+ */
 export async function listOpenOrders() {
   const rows = await db
     .select()
     .from(schema.orders)
-    .where(and(eq(schema.orders.status, "paid"), isNull(schema.orders.courierId)))
+    .where(
+      and(
+        isNull(schema.orders.courierId),
+        inArray(schema.orders.status, ["finding_courier", "scheduled"])
+      )
+    )
     .orderBy(desc(schema.orders.t0PlacedAt));
-  return hydrate(rows);
+  const now = Date.now();
+  const open = rows.filter(
+    (o) => o.status === "finding_courier" || isAutoOpen(o.deliverAt, now)
+  );
+  return hydrate(open);
 }
 
 /** Orders this courier is currently handling or has completed. */

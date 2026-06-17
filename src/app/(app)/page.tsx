@@ -9,8 +9,9 @@ import {
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { tsh, clock } from "@/lib/format";
-import { canAcceptOrder, orderCeiling } from "@/lib/domain/risk";
+import { canAcceptOrder, orderCeiling, courierEarning } from "@/lib/domain/risk";
 import { isHotMeal, type MenuCategory } from "@/lib/domain/catalog";
+import { distanceBetween, formatDistance, CAMPUS_CENTER } from "@/lib/domain/geo";
 import {
   ORDER_STATUS_LABEL,
   ORDER_STATUS_TONE,
@@ -18,6 +19,7 @@ import {
 } from "@/lib/domain/lifecycle";
 import { OnlineToggle } from "@/components/courier/OnlineToggle";
 import { AcceptButton } from "@/components/courier/AcceptButton";
+import { FeedLive } from "@/components/courier/FeedLive";
 
 export default async function FeedPage() {
   const session = await getSession("courier");
@@ -25,16 +27,34 @@ export default async function FeedPage() {
   const courier = await getCourierById(session.sub);
   if (!courier) redirect("/activate");
 
-  const [open, mine] = await Promise.all([
+  const [openRaw, mine] = await Promise.all([
     listOpenOrders(),
     listCourierOrders(courier.id),
   ]);
   const active = mine.filter(
-    (o) => o.status === "accepted" || o.status === "collected"
+    (o) =>
+      o.status === "pending_payment" ||
+      o.status === "accepted" ||
+      o.status === "collected"
   );
+
+  // Prefer nearby pickups: sort open orders by distance from the courier's
+  // last-known location (falling back to campus) to each vendor. A courier can
+  // hold several deliveries at once, so closer jobs surface first.
+  const from =
+    courier.lastLat != null && courier.lastLng != null
+      ? { lat: courier.lastLat, lng: courier.lastLng }
+      : CAMPUS_CENTER;
+  const open = openRaw
+    .map((o) => ({
+      o,
+      dist: distanceBetween(from, { lat: o.vendorLat, lng: o.vendorLng }),
+    }))
+    .sort((a, b) => (a.dist ?? Infinity) - (b.dist ?? Infinity));
 
   return (
     <div className="flex flex-col gap-5">
+      <FeedLive courierId={courier.id} />
       {/* Status header */}
       <Card className="bg-primary-dark text-white">
         <p className="text-xs uppercase tracking-wide text-white/70">
@@ -42,11 +62,11 @@ export default async function FeedPage() {
         </p>
         <p className="text-3xl font-extrabold">{tsh(courier.depositTsh)}</p>
         <p className="mt-1 text-sm text-white/80">
-          Order ceiling {tsh(orderCeiling(courier.depositTsh))} · 80% rule
+          Order ceiling {tsh(orderCeiling(courier.depositTsh))} · 90% rule
         </p>
       </Card>
 
-      <OnlineToggle online={courier.isOnline} />
+      <OnlineToggle online={courier.isOnline} courierId={courier.id} />
 
       {/* Active deliveries */}
       {active.length > 0 && (
@@ -80,7 +100,7 @@ export default async function FeedPage() {
             No orders waiting right now. Stay online — they&apos;ll appear here.
           </p>
         )}
-        {open.map((o) => {
+        {open.map(({ o, dist }) => {
           const hasHotMeal = o.items.some((i) =>
             isHotMeal(i.category as MenuCategory)
           );
@@ -98,6 +118,9 @@ export default async function FeedPage() {
                     <Badge tone={o.vendorLocation === "in_campus" ? "primary" : "accent"}>
                       {o.vendorLocation === "in_campus" ? "In campus" : "Off campus"}
                     </Badge>
+                    {dist != null && (
+                      <Badge tone="neutral">{formatDistance(dist)} away</Badge>
+                    )}
                   </div>
                   <p className="truncate text-sm text-muted">
                     {o.items.map((i) => `${i.qty}× ${i.nameSnapshot}`).join(", ")}
@@ -108,16 +131,16 @@ export default async function FeedPage() {
                 </div>
                 <div className="shrink-0 text-right">
                   <p className="font-extrabold text-primary">
-                    +{tsh(o.deliveryFeeTsh)}
+                    +{tsh(courierEarning(o.deliveryFeeTsh))}
                   </p>
-                  <p className="text-xs text-muted">value {tsh(o.itemCostTsh)}</p>
+                  <p className="text-xs text-muted">you earn</p>
                 </div>
               </div>
               <div className="flex items-center justify-between border-t border-border pt-2">
                 {hasHotMeal && <Badge tone="accent">Hot meal</Badge>}
                 {check.ok ? (
                   <div className="ml-auto">
-                    <AcceptButton orderId={o.id} />
+                    <AcceptButton orderId={o.id} courierId={courier.id} />
                   </div>
                 ) : (
                   <span className="ml-auto text-right text-xs font-medium text-danger">

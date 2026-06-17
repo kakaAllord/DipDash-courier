@@ -4,8 +4,15 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { acceptOrder } from "@/app/(app)/courier-actions";
+import { getSocket, emitOrderStatus } from "@/lib/realtime";
 
-export function AcceptButton({ orderId }: { orderId: string }) {
+export function AcceptButton({
+  orderId,
+  courierId,
+}: {
+  orderId: string;
+  courierId: string;
+}) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -14,8 +21,15 @@ export function AcceptButton({ orderId }: { orderId: string }) {
     setError(null);
     start(async () => {
       const res = await acceptOrder(orderId);
-      if (!res.ok) setError(res.error ?? "Failed");
-      else router.push(`/orders/${orderId}`);
+      if (!res.ok) {
+        setError(res.error ?? "Failed");
+        return;
+      }
+      emitOrderStatus(getSocket({ role: "courier", id: courierId }), {
+        orderId,
+        status: "accepted",
+      });
+      router.push(`/orders/${orderId}`);
     });
   }
 

@@ -6,8 +6,10 @@ import { redirect } from "next/navigation";
 import { db, schema } from "@/lib/db/client";
 import { getSession, clearSession } from "@/lib/auth/session";
 import { getCourierById } from "@/lib/repo/couriers";
-import { canAcceptOrder, canGoActive, computePayoutSplit } from "@/lib/domain/risk";
+import { id } from "@/lib/ids";
+import { canAcceptOrder, canGoActive, courierEarning, RISK } from "@/lib/domain/risk";
 import { isHotMeal, type MenuCategory } from "@/lib/domain/catalog";
+import { isAutoOpen } from "@/lib/domain/delivery";
 
 export interface Result {
   ok: boolean;
@@ -46,6 +48,56 @@ export async function loadDeposit(amountTsh: number): Promise<Result> {
   return { ok: true };
 }
 
+/** Move all spendable earnings into the security deposit (lifts the ceiling). */
+export async function moveEarningsToDeposit(): Promise<Result> {
+  const courier = await requireCourier();
+  if (!courier) return { ok: false, error: "Please activate again" };
+  if (courier.earningsTsh <= 0) return { ok: false, error: "No earnings to move" };
+
+  const amount = courier.earningsTsh;
+  const newDeposit = courier.depositTsh + amount;
+  const patch: Partial<typeof schema.couriers.$inferInsert> = {
+    depositTsh: newDeposit,
+    earningsTsh: 0,
+  };
+  if (courier.status === "restricted" && canGoActive(newDeposit)) {
+    patch.status = "active";
+  }
+  await db.update(schema.couriers).set(patch).where(eq(schema.couriers.id, courier.id));
+  revalidatePath("/wallet");
+  revalidatePath("/");
+  return { ok: true };
+}
+
+/** Request a cash-out of all earnings (allowed from the payout threshold). */
+export async function requestPayout(): Promise<Result> {
+  const courier = await requireCourier();
+  if (!courier) return { ok: false, error: "Please activate again" };
+  if (courier.earningsTsh < RISK.payoutThresholdTsh) {
+    return {
+      ok: false,
+      error: `You can withdraw once earnings reach ${RISK.payoutThresholdTsh.toLocaleString(
+        "en-US"
+      )} TSh`,
+    };
+  }
+  const amount = courier.earningsTsh;
+  await db.transaction(async (tx) => {
+    await tx.insert(schema.payouts).values({
+      id: id("pay"),
+      courierId: courier.id,
+      amountTsh: amount,
+      status: "requested",
+    });
+    await tx
+      .update(schema.couriers)
+      .set({ earningsTsh: 0 })
+      .where(eq(schema.couriers.id, courier.id));
+  });
+  revalidatePath("/wallet");
+  return { ok: true };
+}
+
 export async function setOnline(online: boolean): Promise<Result> {
   const courier = await requireCourier();
   if (!courier) return { ok: false, error: "Please activate again" };
@@ -64,6 +116,20 @@ export async function setOnline(online: boolean): Promise<Result> {
   return { ok: true };
 }
 
+/** Persist last-known live location (throttled by the client streamer). */
+export async function updateLocation(lat: number, lng: number): Promise<Result> {
+  const courier = await requireCourier();
+  if (!courier) return { ok: false, error: "Not signed in" };
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return { ok: false, error: "Invalid coordinates" };
+  }
+  await db
+    .update(schema.couriers)
+    .set({ lastLat: lat, lastLng: lng, lastLocationAt: Date.now() })
+    .where(eq(schema.couriers.id, courier.id));
+  return { ok: true };
+}
+
 export async function acceptOrder(orderId: string): Promise<Result> {
   const courier = await requireCourier();
   if (!courier) return { ok: false, error: "Please activate again" };
@@ -75,7 +141,12 @@ export async function acceptOrder(orderId: string): Promise<Result> {
     .where(and(eq(schema.orders.id, orderId), isNull(schema.orders.courierId)))
     .limit(1);
   const order = orderRows[0];
-  if (!order || order.status !== "paid") {
+  if (!order) return { ok: false, error: "Order is no longer available" };
+
+  const isInstant = order.status === "finding_courier";
+  const isScheduledOpen =
+    order.status === "scheduled" && isAutoOpen(order.deliverAt);
+  if (!isInstant && !isScheduledOpen) {
     return { ok: false, error: "Order is no longer available" };
   }
 
@@ -92,10 +163,12 @@ export async function acceptOrder(orderId: string): Promise<Result> {
   });
   if (!check.ok) return { ok: false, error: check.reason };
 
-  // Guarded update: only claim if still unassigned (avoids double-accept races).
+  // Instant: hold at pending_payment until the student pays. Scheduled (already
+  // paid): go straight to accepted. Guarded update avoids double-accept races.
+  const nextStatus = isInstant ? "pending_payment" : "accepted";
   const claimed = await db
     .update(schema.orders)
-    .set({ courierId: courier.id, status: "accepted", t1AcceptedAt: Date.now() })
+    .set({ courierId: courier.id, status: nextStatus, t1AcceptedAt: Date.now() })
     .where(and(eq(schema.orders.id, orderId), isNull(schema.orders.courierId)))
     .returning({ id: schema.orders.id });
   if (claimed.length === 0) {
@@ -150,7 +223,8 @@ export async function confirmDelivery(
     return { ok: false, error: "Incorrect PIN" };
   }
 
-  const split = computePayoutSplit(courier.depositTsh, order.deliveryFeeTsh);
+  // Courier keeps 50% of the delivery fee as spendable earnings.
+  const earned = courierEarning(order.deliveryFeeTsh);
 
   await db.transaction(async (tx) => {
     await tx
@@ -163,11 +237,7 @@ export async function confirmDelivery(
       .where(eq(schema.escrowTxns.orderId, orderId));
     await tx
       .update(schema.couriers)
-      .set({
-        depositTsh: split.newDepositTsh,
-        lockedWalletTsh: courier.lockedWalletTsh + split.withheldTsh,
-        earningsTsh: courier.earningsTsh + split.toEarningsTsh,
-      })
+      .set({ earningsTsh: courier.earningsTsh + earned })
       .where(eq(schema.couriers.id, courier.id));
   });
 

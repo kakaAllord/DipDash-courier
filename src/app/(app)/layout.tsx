@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth/session";
 import { getCourierById } from "@/lib/repo/couriers";
 import { CourierNav } from "@/components/courier/CourierNav";
+import { LocationStreamer } from "@/components/courier/LocationStreamer";
 import { Wordmark } from "@/components/Brand";
 import { Badge } from "@/components/ui/Badge";
 
@@ -18,6 +19,7 @@ export default async function AppLayout({
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col">
+      <LocationStreamer courierId={courier.id} online={courier.isOnline} />
       <header className="safe-top sticky top-0 z-30 border-b border-border bg-surface/95 backdrop-blur">
         <div className="flex items-center justify-between px-4 py-3">
           <Link href="/" className="flex items-center gap-1.5">
